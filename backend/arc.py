@@ -30,8 +30,15 @@ def arc(board : list):
                 steps.append(step)  
                 if len(domains[i][k]) == 1 and (i, k) not in arced:
                     queue.append((i, k))
-                    board[i][k] = list(domains[i][k])[0]
+                    inferred_value = list(domains[i][k])[0]
+                    board[i][k] = inferred_value
                     assigned += 1
+                    inferred_step = {
+                        "type": "arc_inferred",
+                        "cell": (i, k),
+                        "value": inferred_value
+                    }
+                    steps.append(inferred_step)
                 if len(domains[i][k]) == 0:
                     return board, domains,steps, False ,True 
                 
@@ -47,8 +54,15 @@ def arc(board : list):
                 steps.append(step)   
                 if len(domains[k][j]) == 1 and (k, j) not in arced:
                     queue.append((k, j))
-                    board[k][j] = list(domains[k][j])[0]
+                    inferred_value = list(domains[k][j])[0]
+                    board[k][j] = inferred_value
                     assigned += 1
+                    inferred_step = {
+                        "type": "arc_inferred",
+                        "cell": (k, j),
+                        "value": inferred_value
+                    }
+                    steps.append(inferred_step)
                 if len(domains[k][j]) == 0:
                     return board, domains, steps, False,True
                 
@@ -67,8 +81,15 @@ def arc(board : list):
                     steps.append(step)   
                     if len(domains[k][l]) == 1 and (k, l) not in arced:
                         queue.append((k, l))
-                        board[k][l] = list(domains[k][l])[0]
+                        inferred_value = list(domains[k][l])[0]
+                        board[k][l] = inferred_value
                         assigned += 1
+                        inferred_step = {
+                            "type": "arc_inferred",
+                            "cell": (k, l),
+                            "value": inferred_value
+                        }
+                        steps.append(inferred_step)
                     if len(domains[k][l]) == 0:
                         return board, domains, steps, False,False
 

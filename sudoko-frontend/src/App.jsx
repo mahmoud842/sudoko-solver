@@ -241,10 +241,30 @@ const App = () => {
         if (updatedDomains[key]) {
           updatedDomains[key] = updatedDomains[key].filter(v => v !== step.value);
         }
+      } else if (step.type === 'arc_inferred') {
+        const [row, col] = step.cell;
+        const key = `${row}-${col}`;
+        updatedDomains[key] = [step.value];
       } else if (step.type === 'backtrack_assign') {
         const [row, col] = step.cell;
         const key = `${row}-${col}`;
         updatedDomains[key] = [step.value];
+      } else if (step.type === 'backtrack_revert') {
+        if (step.domain_before) {
+          const domainBefore = step.domain_before;
+          for (let r = 0; r < 9; r++) {
+            for (let c = 0; c < 9; c++) {
+              const key = `${r}-${c}`;
+              const domainSet = domainBefore[r][c];
+              updatedDomains[key] = domainSet.length > 0 ? Array.from(domainSet) : [];
+            }
+          }
+        } else {
+          // Fallback: clear the cell's domain
+          const [row, col] = step.cell;
+          const key = `${row}-${col}`;
+          updatedDomains[key] = [];
+        }
       }
     }
     
@@ -487,13 +507,16 @@ const App = () => {
   const renderAIMode = () => {
     const currentStep = currentStepIndex >= 0 ? aiSteps[currentStepIndex] : null;
     
-    // Track which cells have been assigned via backtracking
+    // Track which cells have been assigned via backtracking (considering reverts)
     const backtrackAssignments = {};
     for (let i = 0; i <= currentStepIndex; i++) {
       const step = aiSteps[i];
       if (step.type === 'backtrack_assign') {
         const key = `${step.cell[0]}-${step.cell[1]}`;
         backtrackAssignments[key] = step.value;
+      } else if (step.type === 'backtrack_revert') {
+        const key = `${step.cell[0]}-${step.cell[1]}`;
+        delete backtrackAssignments[key];
       }
     }
     
@@ -530,7 +553,7 @@ const App = () => {
                   }`}
                 >
                   <div className="font-semibold text-sm">
-                    Step {index + 1}: {step.type === 'arc' ? 'Arc Consistency' : 'Backtrack Assign'}
+                    Step {index + 1}: {step.type === 'arc' ? 'Arc Consistency' : step.type === 'arc_inferred' ? 'Arc Inferred' : step.type === 'backtrack_assign' ? 'Backtrack Assign' : 'Backtrack Revert'}
                   </div>
                   {step.type === 'arc' ? (
                     <div className="text-sm mt-1">
@@ -541,10 +564,22 @@ const App = () => {
                         Remove value <span className="font-bold text-red-600">{step.value}</span> from domain
                       </span>
                     </div>
-                  ) : (
+                  ) : step.type === 'arc_inferred' ? (
+                    <div className="text-sm mt-1">
+                      Inferred <span className="font-bold text-purple-600">{step.value}</span> at cell{' '}
+                      <span className="font-mono bg-gray-200 px-1 rounded">({step.cell[0]}, {step.cell[1]})</span>
+                      <span className="text-gray-600 text-xs"> (via arc consistency)</span>
+                    </div>
+                  ) : step.type === 'backtrack_assign' ? (
                     <div className="text-sm mt-1">
                       Assign <span className="font-bold text-green-600">{step.value}</span> to cell{' '}
                       <span className="font-mono bg-gray-200 px-1 rounded">({step.cell[0]}, {step.cell[1]})</span>
+                    </div>
+                  ) : (
+                    <div className="text-sm mt-1">
+                      Revert value <span className="font-bold text-orange-600">{step.value}</span> from cell{' '}
+                      <span className="font-mono bg-gray-200 px-1 rounded">({step.cell[0]}, {step.cell[1]})</span>
+                      <span className="text-gray-600 text-xs"> (backtracking)</span>
                     </div>
                   )}
                 </div>
@@ -560,6 +595,14 @@ const App = () => {
                   const key = `${rowIndex}-${colIndex}`;
                   const cellDomains = domains[key] || [];
                   const isBacktrackAssigned = backtrackAssignments[key] !== undefined;
+                  const isArcInferred = {};
+                  for (let i = 0; i <= currentStepIndex; i++) {
+                    const step = aiSteps[i];
+                    if (step.type === 'arc_inferred') {
+                      const stepKey = `${step.cell[0]}-${step.cell[1]}`;
+                      isArcInferred[stepKey] = step.value;
+                    }
+                  }
                   
                   return (
                     <div
@@ -576,6 +619,13 @@ const App = () => {
                       ) : isBacktrackAssigned ? (
                         <div className="absolute inset-0 flex items-center justify-center font-bold text-3xl text-blue-600">
                           {backtrackAssignments[key]}
+                        </div>
+                      ) : isArcInferred[key] ? (
+                        <div className="relative w-full h-full flex items-center justify-center">
+                          <div className="absolute inset-0 flex items-center justify-center font-bold text-3xl text-purple-600">
+                            {isArcInferred[key]}
+                          </div>
+                          <div className="absolute top-1 right-1 text-purple-600 font-bold text-lg">⭐</div>
                         </div>
                       ) : (
                         <div className="absolute inset-0 p-1 grid grid-cols-3 gap-0 text-xs">

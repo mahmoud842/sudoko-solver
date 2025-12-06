@@ -84,7 +84,7 @@ def api_solve():
 	solution = backtracking.get_solution(board_copy)
 	end = time.perf_counter()
 	time_taken = (end - start) * 1000
-
+	print(time_taken)
 	return jsonify({
 		'solution': solution,
 		'time_taken_ms': time_taken
@@ -116,6 +116,13 @@ def api_solve_arc_backtracking():
 		'time_taken_ms': time_taken
 	})
 
+def countFilled(board):
+	c = 0
+	for i in range(0,9):
+		for j in range(0, 9):
+			if (board[i][j] != 0):
+				c += 1
+	return c
 
 @app.route('/api/generate', methods=['POST'])
 def api_generate():
@@ -138,11 +145,13 @@ def api_generate():
 		filled_cells = difficulty_map[difficulty.lower()]
 	else:
 		filled_cells = int(difficulty)
-		if filled_cells < 20 or filled_cells > 81:
-			return jsonify({'error': 'Difficulty must be between 20 and 81'}), 400
+		if filled_cells < 17 or filled_cells > 81:
+			return jsonify({'error': 'Difficulty must be between 17 and 81'}), 400
 	
 	start = time.perf_counter()
+	print(filled_cells)
 	board = generate_puzzle(filled_cells)
+	print(countFilled(board))
 	end = time.perf_counter()
 	time_taken = (end - start) * 1000
 
@@ -156,4 +165,12 @@ def api_generate():
 if __name__ == '__main__':
 	# When running directly, start the Flask dev server
     app.run(host='0.0.0.0', port=5000, debug=True)
+
+def countFilled(board):
+	c = 0
+	for i in range(0,9):
+		for j in range(0, 9):
+			if (board[i][j] != 0):
+				c += 1
+	return c
 

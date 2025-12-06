@@ -28,9 +28,13 @@ def _find_best_empty_cell(board):
 def _apply_arc(board, steps):
     """Run arc consistency, append its steps, and report status."""
     arc_board, domains, arc_steps_raw, arc_ok, arc_complete = arc(board)
-    steps.extend(
-        [{"type": "arc", "from": s["from"], "to": s["to"], "value": s["value"]} for s in arc_steps_raw]
-    )
+    for s in arc_steps_raw:
+        if isinstance(s, dict) and "type" in s:
+            # Already formatted (arc_inferred steps)
+            steps.append(s)
+        else:
+            # Old format (arc steps with from, to, value)
+            steps.append({"type": "arc", "from": s["from"], "to": s["to"], "value": s["value"]})
     return arc_board, domains, arc_ok, arc_complete
 
 
@@ -64,8 +68,8 @@ def _backtrack_with_steps(board, steps):
     board, domains, arc_ok, arc_complete = _apply_arc(board, steps)
     if not arc_ok:
         return False, board
-    if arc_complete:
-        return True, board
+    # if arc_complete:
+    #     return True, board
 
     cell, options = _find_best_cell_from_domains(board, domains)
     if cell is None:
@@ -76,6 +80,9 @@ def _backtrack_with_steps(board, steps):
         if not is_safe(board, row, col, num):
             continue
 
+        # Save domain state before assignment (convert sets to lists for JSON serialization)
+        domain_snapshot = [[list(d) for d in domain_row] for domain_row in domains]
+
         next_board = copy.deepcopy(board)
         next_board[row][col] = num
         steps.append({"type": "backtrack_assign", "cell": (row, col), "value": num})
@@ -84,7 +91,9 @@ def _backtrack_with_steps(board, steps):
         if solved:
             return True, solved_board
 
-        steps.append({"type": "backtrack_revert", "cell": (row, col), "value": num})
+        # Revert the cell value on backtrack
+        next_board[row][col] = 0
+        steps.append({"type": "backtrack_revert", "cell": (row, col), "value": num, "domain_before": domain_snapshot})
 
     return False, board
 
