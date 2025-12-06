@@ -1,518 +1,636 @@
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
-import { RefreshCcw, Zap, Target, CheckCircle, XCircle, Loader, HelpCircle } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import { Play, Undo, Redo, CheckCircle, Brain, RotateCcw, ChevronLeft, ChevronRight } from 'lucide-react';
 
-// --- Constants ---
-const API_BASE_URL = 'http://127.0.0.1:5000'; // Assumes the Flask app is running on the same host
-
-const DIFFICULTY_MAP = {
-  easy: 50,
-  medium: 40,
-  hard: 30,
-};
-
-// --- Utility Functions ---
-
-/**
- * Checks if a given number is valid at (row, col) in the current board.
- * This is a highly optimized client-side check used for immediate red-marking.
- * It checks conflicts against all other existing numbers (both initial and user-entered).
- * @param {number[][]} board - The 9x9 board array
- * @param {number} row - The row index (0-8)
- * @param {number} col - The column index (0-8)
- * @param {number} num - The number to check (1-9)
- * @returns {boolean} - True if valid, false otherwise.
- */
-const isValidPlacement = (board, row, col, num) => {
-  if (num === 0) return true; // 0 (empty) is always valid
-
-  // Check row and column
-  for (let i = 0; i < 9; i++) {
-    if ((i !== col && board[row][i] === num) || (i !== row && board[i][col] === num)) {
-      return false;
-    }
-  }
-
-  // Check 3x3 subgrid
-  const startRow = Math.floor(row / 3) * 3;
-  const startCol = Math.floor(col / 3) * 3;
-  for (let i = 0; i < 3; i++) {
-    for (let j = 0; j < 3; j++) {
-      const r = startRow + i;
-      const c = startCol + j;
-      if (r !== row && c !== col && board[r][c] === num) {
-        return false;
-      }
-    }
-  }
-  return true;
-};
-
-// --- API Helper Function (with exponential backoff) ---
-
-const callApi = async (endpoint, data, maxRetries = 3) => {
-  const url = `${API_BASE_URL}${endpoint}`;
-  let lastError = null;
-
-  for (let attempt = 0; attempt < maxRetries; attempt++) {
-    try {
-      const response = await fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(data),
-      });
-
-      if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(errorData.error || `HTTP error! Status: ${response.status}`);
-      }
-      return await response.json();
-    } catch (error) {
-      lastError = error;
-      if (attempt < maxRetries - 1) {
-        // Exponential backoff
-        const delay = Math.pow(2, attempt) * 1000 + Math.random() * 1000;
-        await new Promise(res => setTimeout(res, delay));
-      }
-    }
-  }
-  throw lastError;
-};
-
-// --- Main App Component ---
+const API_URL = 'http://localhost:5000/api';
 
 const App = () => {
-  const [initialBoard, setInitialBoard] = useState(null);
+  const [gameState, setGameState] = useState('input'); // input, playing, ai
+  const [board, setBoard] = useState(Array(9).fill(null).map(() => Array(9).fill(0)));
+  const [originalBoard, setOriginalBoard] = useState(null);
   const [currentBoard, setCurrentBoard] = useState(null);
-  const [validationMask, setValidationMask] = useState(null);
-  const [isLoading, setIsLoading] = useState(false);
-  const [status, setStatus] = useState({ type: 'info', message: 'Choose an action to begin.' });
-  const [difficulty, setDifficulty] = useState('medium');
-  const [showSolutionPopup, setShowSolutionPopup] = useState(false);
-  const [solutionBoard, setSolutionBoard] = useState(null);
-  const [hintCell, setHintCell] = useState(null);
   const [history, setHistory] = useState([]);
+  const [historyIndex, setHistoryIndex] = useState(-1);
+  const [selectedCell, setSelectedCell] = useState(null);
+  const [errors, setErrors] = useState(new Set());
+  const [solvable, setSolvable] = useState(null);
+  const [numSolutions, setNumSolutions] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [message, setMessage] = useState('');
+  
+  // AI mode states
+  const [aiSteps, setAiSteps] = useState([]);
+  const [currentStepIndex, setCurrentStepIndex] = useState(-1);
+  const [domains, setDomains] = useState({});
+  const [aiSolution, setAiSolution] = useState(null);
+  const [aiTimeTaken, setAiTimeTaken] = useState(0);
 
-  // Memoize empty board for resetting
-  const EMPTY_BOARD = useMemo(() => Array(9).fill(null).map(() => Array(9).fill(0)), []);
+  const emptyBoard = Array(9).fill(null).map(() => Array(9).fill(0));
 
-  // --- Core Board Logic ---
+  const validateMove = (newBoard, row, col, value) => {
+    if (value === 0) return true;
+    
+    // Check row
+    for (let c = 0; c < 9; c++) {
+      if (c !== col && newBoard[row][c] === value) return false;
+    }
+    
+    // Check column
+    for (let r = 0; r < 9; r++) {
+      if (r !== row && newBoard[r][col] === value) return false;
+    }
+    
+    // Check 3x3 box
+    const boxRow = Math.floor(row / 3) * 3;
+    const boxCol = Math.floor(col / 3) * 3;
+    for (let r = boxRow; r < boxRow + 3; r++) {
+      for (let c = boxCol; c < boxCol + 3; c++) {
+        if (r !== row && c !== col && newBoard[r][c] === value) return false;
+      }
+    }
+    
+    return true;
+  };
 
-  const checkAndApplyLocalValidation = useCallback((boardToCheck) => {
-    // This creates a mask of invalid user-entered cells (red marks)
-    const newMask = boardToCheck.map((rowArr, r) =>
-      rowArr.map((num, c) => {
-        // Only check user-entered cells (where initialBoard[r][c] is 0)
-        if (num !== 0 && initialBoard && initialBoard[r][c] === 0) {
-          return !isValidPlacement(boardToCheck, r, c, num);
-        }
+  const checkSolvability = async (boardToCheck) => {
+    setLoading(true);
+    setMessage('Checking solvability...');
+    try {
+      const response = await fetch(`${API_URL}/solvable`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ board: boardToCheck })
+      });
+      const data = await response.json();
+      console.log(data);
+      if (data.error != null) {
+        setMessage(data.error);
+        setSolvable(false);
         return false;
-      })
-    );
-    setValidationMask(newMask);
-    return newMask;
-  }, [initialBoard]);
+      }
+      setNumSolutions(data.number_of_solutions);
+      setSolvable(data.solvable);
+      if (data.solvable){
+        setMessage(`Board is solvable ${data.number_of_solutions > 1 ? 'but has more than 1 solution' : 'and has only 1 solution'}`)
+      }
+      else {
+        setMessage(`Board is not solvable`);
+      }
+      return data.solvable;
+    } catch (error) {
+      setMessage('Error checking solvability: ' + error.message);
+      return false;
+    } finally {
+      setLoading(false);
+    }
+  };
 
-  const resetGame = (newBoard) => {
-    setInitialBoard(newBoard);
+  const generateBoard = async (difficulty) => {
+    setLoading(true);
+    setMessage(`Generating ${difficulty} puzzle...`);
+    try {
+      const response = await fetch(`${API_URL}/generate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ difficulty })
+      });
+      const data = await response.json();
+      setBoard(data.board);
+      setMessage(`Generated ${difficulty} puzzle in ${data.time_taken_ms.toFixed(2)}ms`);
+    } catch (error) {
+      setMessage('Error generating board: ' + error.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const startGame = async () => {
+    const isSolvable = await checkSolvability(board);
+    if (!isSolvable) return;
+    
+    setOriginalBoard(JSON.parse(JSON.stringify(board)));
+    setCurrentBoard(JSON.parse(JSON.stringify(board)));
+    setHistory([JSON.parse(JSON.stringify(board))]);
+    setHistoryIndex(0);
+    setGameState('playing');
+    setErrors(new Set());
+  };
+
+  const handleCellChange = (row, col, value) => {
+    if (originalBoard[row][col] !== 0) return;
+    
+    const newBoard = JSON.parse(JSON.stringify(currentBoard));
+    newBoard[row][col] = value;
+    
+    const isValid = validateMove(newBoard, row, col, value);
+    
+    if (!isValid && value !== 0) {
+      const newErrors = new Set(errors);
+      newErrors.add(`${row}-${col}`);
+      setErrors(newErrors);
+    } else {
+      const newErrors = new Set(errors);
+      newErrors.delete(`${row}-${col}`);
+      setErrors(newErrors);
+    }
+    
+    const newHistory = history.slice(0, historyIndex + 1);
+    newHistory.push(newBoard);
+    setHistory(newHistory);
+    setHistoryIndex(newHistory.length - 1);
     setCurrentBoard(newBoard);
-    setValidationMask(Array(9).fill(null).map(() => Array(9).fill(false)));
-    setStatus({ type: 'info', message: 'Game started!' });
-    setSolutionBoard(null);
-    setHintCell(null);
-    setShowSolutionPopup(false);
-    setHistory([]);
   };
 
-  useEffect(() => {
-    if (currentBoard) {
-      checkAndApplyLocalValidation(currentBoard);
-      // Check for completion
-      const isComplete = currentBoard.every(row => row.every(cell => cell !== 0));
-      const hasErrors = validationMask?.some(row => row.some(cell => cell));
-
-      if (isComplete && !hasErrors) {
-        setStatus({ type: 'success', message: 'Congratulations! The board is fully solved and valid.' });
-      } else if (isComplete && hasErrors) {
-        setStatus({ type: 'error', message: 'Board is complete but contains invalid moves (red cells).' });
-      }
-    }
-  }, [currentBoard, checkAndApplyLocalValidation]);
-
-
-  const handleInputChange = (r, c, value) => {
-    if (initialBoard[r][c] !== 0) return; // Cannot change initial numbers
-
-    const num = parseInt(value, 10) || 0; // Ensure it's 0-9
-    if (num < 0 || num > 9) return;
-
-    // Save current state to history before changing
-    setHistory(prev => [...prev, { board: currentBoard, mask: validationMask }]);
-
-    const newBoard = currentBoard.map((row, rowIdx) =>
-      row.map((cell, colIdx) => (rowIdx === r && colIdx === c ? num : cell))
-    );
-    setCurrentBoard(newBoard);
-    // The useEffect hook will handle validation mask update
-  };
-
-  const handleUndo = () => {
-    if (history.length === 0) return;
-    const lastState = history[history.length - 1];
-    setCurrentBoard(lastState.board);
-    setValidationMask(lastState.mask);
-    setHistory(prev => prev.slice(0, -1));
-    setStatus({ type: 'info', message: 'Move undone.' });
-  };
-
-
-  // --- API Handlers ---
-
-  const handleGenerateBoard = async () => {
-    setIsLoading(true);
-    setStatus({ type: 'info', message: 'Generating a new puzzle...' });
-    try {
-      const result = await callApi('/api/generate', { difficulty: difficulty });
-      if (result.board) {
-        resetGame(result.board);
-        setStatus({ type: 'success', message: `New ${difficulty} board generated in ${result.time_taken_ms.toFixed(1)}ms.` });
-      }
-    } catch (e) {
-      setStatus({ type: 'error', message: `Generation failed: ${e.message}` });
-    } finally {
-      setIsLoading(false);
+  const undo = () => {
+    if (historyIndex > 0) {
+      setHistoryIndex(historyIndex - 1);
+      setCurrentBoard(history[historyIndex - 1]);
     }
   };
 
-  const handleValidateBoard = async () => {
-    setIsLoading(true);
-    setStatus({ type: 'info', message: 'Validating current board layout...' });
+  const redo = () => {
+    if (historyIndex < history.length - 1) {
+      setHistoryIndex(historyIndex + 1);
+      setCurrentBoard(history[historyIndex + 1]);
+    }
+  };
+
+  const solveWithBacktracking = async () => {
+    setLoading(true);
+    setMessage('Solving with backtracking...');
     try {
-      const result = await callApi('/api/validate', { board: currentBoard });
-      if (result.valid) {
-        setStatus({ type: 'success', message: `Board is structurally valid (no immediate conflicts). Checked in ${result.time_taken_ms.toFixed(1)}ms.` });
+      const response = await fetch(`${API_URL}/solve/backtracking`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ board: currentBoard })
+      });
+      const data = await response.json();
+      if (data.solution) {
+        setCurrentBoard(data.solution);
+        const newHistory = history.slice(0, historyIndex + 1);
+        newHistory.push(data.solution);
+        setHistory(newHistory);
+        setHistoryIndex(newHistory.length - 1);
+        setMessage(`Solved in ${data.time_taken_ms.toFixed(2)}ms`);
       } else {
-        setStatus({ type: 'error', message: `Board is structurally invalid (conflicts found). Checked in ${result.time_taken_ms.toFixed(1)}ms.` });
+        setMessage('No solution found');
       }
-    } catch (e) {
-      setStatus({ type: 'error', message: `Validation failed: ${e.message}` });
+    } catch (error) {
+      setMessage('Error solving: ' + error.message);
     } finally {
-      setIsLoading(false);
+      setLoading(false);
     }
   };
 
-  const handleCheckSolvability = async () => {
-    setIsLoading(true);
-    setStatus({ type: 'info', message: 'Checking if the current board is solvable...' });
+  const enterAIMode = async () => {
+    setLoading(true);
+    setMessage('Running AI solver...');
     try {
-      const result = await callApi('/api/solvable', { board: currentBoard });
-      if (result.solvable) {
-        if (result.number_of_solutions > 1) {
-          setStatus({ type: 'warning', message: `Board is solvable but has multiple solutions (${result.number_of_solutions}). This is not a proper Sudoku puzzle.` });
-        } else {
-          setStatus({ type: 'success', message: `Board is solvable and has a unique solution. Solvability checked in ${result.time_to_check_solvable.toFixed(1)}ms.` });
+      const response = await fetch(`${API_URL}/solve/arc-backtracking`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ board: currentBoard })
+      });
+      const data = await response.json();
+      
+      if (data.solvable) {
+        setAiSteps(data.steps);
+        setAiSolution(data.solution);
+        setCurrentStepIndex(-1);
+        setAiTimeTaken(data.time_taken_ms);
+        
+        // Initialize domains with all possible values (1-9) for empty cells
+        const initialDomains = {};
+        for (let r = 0; r < 9; r++) {
+          for (let c = 0; c < 9; c++) {
+            if (currentBoard[r][c] === 0) {
+              initialDomains[`${r}-${c}`] = [1, 2, 3, 4, 5, 6, 7, 8, 9];
+            }
+          }
         }
+        setDomains(initialDomains);
+        
+        setGameState('ai');
+        setMessage(`AI solver completed with ${data.num_steps} steps in ${data.time_taken_ms.toFixed(2)}ms`);
       } else {
-        setStatus({ type: 'error', message: 'This board is NOT solvable. You should consider undoing your moves.' });
+        setMessage('Board is not solvable');
       }
-    } catch (e) {
-      setStatus({ type: 'error', message: `Solvability check failed: ${e.message}` });
+    } catch (error) {
+      setMessage('Error running AI solver: ' + error.message);
     } finally {
-      setIsLoading(false);
+      setLoading(false);
     }
   };
 
-  const handleGetSolution = async () => {
-    setIsLoading(true);
-    setStatus({ type: 'info', message: 'Calculating the solution...' });
-    try {
-      const result = await callApi('/api/solve/backtracking', { board: initialBoard }); // Use initialBoard to get the puzzle's solution
-      if (result.solution) {
-        setSolutionBoard(result.solution);
-        setShowSolutionPopup(true);
-        setStatus({ type: 'success', message: `Solution found in ${result.time_taken_ms.toFixed(1)}ms.` });
-      } else {
-        setStatus({ type: 'error', message: 'Could not find a unique solution for the initial puzzle.' });
-      }
-    } catch (e) {
-      setStatus({ type: 'error', message: `Solving failed: ${e.message}` });
-    } finally {
-      setIsLoading(false);
-    }
-  };
-
-  const handleGetHint = async () => {
-    setIsLoading(true);
-    setStatus({ type: 'info', message: 'Fetching a hint...' });
-    try {
-      // 1. Get the full solution based on the initial board
-      let solution = solutionBoard;
-      if (!solution) {
-        const result = await callApi('/api/solve/backtracking', { board: initialBoard });
-        if (!result.solution) {
-          throw new Error('Could not find solution to generate hint.');
+  const applyStepsToDomains = (stepIndex) => {
+    const initialDomains = {};
+    for (let r = 0; r < 9; r++) {
+      for (let c = 0; c < 9; c++) {
+        if (currentBoard[r][c] === 0) {
+          initialDomains[`${r}-${c}`] = [1, 2, 3, 4, 5, 6, 7, 8, 9];
         }
-        solution = result.solution;
-        setSolutionBoard(solution);
       }
+    }
+    
+    let updatedDomains = { ...initialDomains };
+    
+    for (let i = 0; i <= stepIndex; i++) {
+      const step = aiSteps[i];
+      if (step.type === 'arc') {
+        const [fromRow, fromCol] = step.from;
+        const key = `${fromRow}-${fromCol}`;
+        if (updatedDomains[key]) {
+          updatedDomains[key] = updatedDomains[key].filter(v => v !== step.value);
+        }
+      } else if (step.type === 'backtrack_assign') {
+        const [row, col] = step.cell;
+        const key = `${row}-${col}`;
+        updatedDomains[key] = [step.value];
+      }
+    }
+    
+    setDomains(updatedDomains);
+  };
 
-      // 2. Find the first empty cell
-      let emptyCell = null;
+  const nextStep = () => {
+    if (currentStepIndex < aiSteps.length - 1) {
+      const newIndex = currentStepIndex + 1;
+      setCurrentStepIndex(newIndex);
+      applyStepsToDomains(newIndex);
+    }
+  };
+
+  const prevStep = () => {
+    if (currentStepIndex >= 0) {
+      const newIndex = currentStepIndex - 1;
+      setCurrentStepIndex(newIndex);
+      if (newIndex >= 0) {
+        applyStepsToDomains(newIndex);
+      } else {
+        // Reset to initial domains
+        const initialDomains = {};
+        for (let r = 0; r < 9; r++) {
+          for (let c = 0; c < 9; c++) {
+            if (currentBoard[r][c] === 0) {
+              initialDomains[`${r}-${c}`] = [1, 2, 3, 4, 5, 6, 7, 8, 9];
+            }
+          }
+        }
+        setDomains(initialDomains);
+      }
+    }
+  };
+
+  const jumpToStep = (stepIndex) => {
+    if (stepIndex < -1 || stepIndex >= aiSteps.length) return;
+    
+    setCurrentStepIndex(stepIndex);
+    if (stepIndex >= 0) {
+      applyStepsToDomains(stepIndex);
+    } else {
+      // Reset to initial domains
+      const initialDomains = {};
       for (let r = 0; r < 9; r++) {
         for (let c = 0; c < 9; c++) {
           if (currentBoard[r][c] === 0) {
-            emptyCell = [r, c];
-            break;
+            initialDomains[`${r}-${c}`] = [1, 2, 3, 4, 5, 6, 7, 8, 9];
           }
         }
-        if (emptyCell) break;
       }
+      setDomains(initialDomains);
+    }
+  };
 
-      if (!emptyCell) {
-        setStatus({ type: 'warning', message: 'The board is already complete! No hint needed.' });
-        return;
+  const reset = () => {
+    setGameState('input');
+    setBoard(emptyBoard);
+    setOriginalBoard(null);
+    setCurrentBoard(null);
+    setHistory([]);
+    setHistoryIndex(-1);
+    setSelectedCell(null);
+    setErrors(new Set());
+    setSolvable(null);
+    setNumSolutions(null);
+    setMessage('');
+    setAiSteps([]);
+    setCurrentStepIndex(-1);
+    setDomains({});
+    setAiSolution(null);
+    setAiTimeTaken(0);
+  };
+
+  const renderInputBoard = () => (
+    <div className="space-y-4">
+      <h2 className="text-2xl font-bold text-center">Sudoku Game</h2>
+      <div className="grid grid-cols-9 gap-0 border-4 border-gray-800 w-fit mx-auto">
+        {board.map((row, rowIndex) => (
+          row.map((cell, colIndex) => (
+            <input
+              key={`${rowIndex}-${colIndex}`}
+              type="text"
+              maxLength="1"
+              value={cell === 0 ? '' : cell}
+              onChange={(e) => {
+                const val = e.target.value;
+                if (val === '' || /^[1-9]$/.test(val)) {
+                  const newBoard = [...board];
+                  newBoard[rowIndex][colIndex] = val === '' ? 0 : parseInt(val);
+                  setBoard(newBoard);
+                }
+              }}
+              className={`w-12 h-12 text-center font-bold text-lg border border-gray-300
+                ${colIndex % 3 === 2 && colIndex !== 8 ? 'border-r-2 border-r-gray-800' : ''}
+                ${rowIndex % 3 === 2 && rowIndex !== 8 ? 'border-b-2 border-b-gray-800' : ''}
+                focus:outline-none focus:bg-blue-100`}
+            />
+          ))
+        ))}
+      </div>
+      
+      <div className="flex gap-2 justify-center flex-wrap">
+        <button
+          onClick={() => generateBoard('easy')}
+          className="px-4 py-2 bg-green-500 text-white rounded hover:bg-green-600"
+          disabled={loading}
+        >
+          Easy
+        </button>
+        <button
+          onClick={() => generateBoard('medium')}
+          className="px-4 py-2 bg-yellow-500 text-white rounded hover:bg-yellow-600"
+          disabled={loading}
+        >
+          Medium
+        </button>
+        <button
+          onClick={() => generateBoard('hard')}
+          className="px-4 py-2 bg-red-500 text-white rounded hover:bg-red-600"
+          disabled={loading}
+        >
+          Hard
+        </button>
+      </div>
+      
+      <div className="flex justify-center">
+        <button
+          onClick={startGame}
+          className="px-6 py-3 bg-blue-600 text-white rounded-lg font-semibold hover:bg-blue-700 flex items-center gap-2"
+          disabled={loading}
+        >
+          <Play size={20} />
+          Start Game
+        </button>
+      </div>
+      
+      {message && (
+        <div className="text-center p-3 bg-gray-100 rounded">
+          {message}
+        </div>
+      )}
+    </div>
+  );
+
+  const renderPlayingBoard = () => (
+    <div className="space-y-4">
+      <div className="flex justify-between items-center">
+        <h2 className="text-2xl font-bold">Playing Sudoku</h2>
+        <button
+          onClick={reset}
+          className="px-4 py-2 bg-gray-500 text-white rounded hover:bg-gray-600 flex items-center gap-2"
+        >
+          <RotateCcw size={16} />
+          New Game
+        </button>
+      </div>
+      
+      <div className="grid grid-cols-9 gap-0 border-4 border-gray-800 w-fit mx-auto">
+        {currentBoard.map((row, rowIndex) => (
+          row.map((cell, colIndex) => {
+            const isOriginal = originalBoard[rowIndex][colIndex] !== 0;
+            const hasError = errors.has(`${rowIndex}-${colIndex}`);
+            
+            return (
+              <input
+                key={`${rowIndex}-${colIndex}`}
+                type="text"
+                maxLength="1"
+                value={cell === 0 ? '' : cell}
+                onChange={(e) => {
+                  const val = e.target.value;
+                  if (val === '' || /^[1-9]$/.test(val)) {
+                    handleCellChange(rowIndex, colIndex, val === '' ? 0 : parseInt(val));
+                  }
+                }}
+                disabled={isOriginal}
+                className={`w-12 h-12 text-center font-bold text-lg border border-gray-300
+                  ${colIndex % 3 === 2 && colIndex !== 8 ? 'border-r-2 border-r-gray-800' : ''}
+                  ${rowIndex % 3 === 2 && rowIndex !== 8 ? 'border-b-2 border-b-gray-800' : ''}
+                  ${isOriginal ? 'bg-gray-200 cursor-not-allowed' : 'bg-white'}
+                  ${hasError ? 'text-red-600 bg-red-50' : ''}
+                  focus:outline-none focus:bg-blue-100`}
+              />
+            );
+          })
+        ))}
+      </div>
+      
+      <div className="flex gap-2 justify-center flex-wrap">
+        <button
+          onClick={undo}
+          disabled={historyIndex <= 0}
+          className="px-4 py-2 bg-gray-600 text-white rounded hover:bg-gray-700 disabled:bg-gray-300 flex items-center gap-2"
+        >
+          <Undo size={16} />
+          Undo
+        </button>
+        <button
+          onClick={redo}
+          disabled={historyIndex >= history.length - 1}
+          className="px-4 py-2 bg-gray-600 text-white rounded hover:bg-gray-700 disabled:bg-gray-300 flex items-center gap-2"
+        >
+          <Redo size={16} />
+          Redo
+        </button>
+        <button
+          onClick={() => checkSolvability(currentBoard)}
+          className="px-4 py-2 bg-purple-600 text-white rounded hover:bg-purple-700 flex items-center gap-2"
+          disabled={loading}
+        >
+          <CheckCircle size={16} />
+          Check Solvability
+        </button>
+        <button
+          onClick={solveWithBacktracking}
+          className="px-4 py-2 bg-green-600 text-white rounded hover:bg-green-700 flex items-center gap-2"
+          disabled={loading}
+        >
+          Solve
+        </button>
+        <button
+          onClick={enterAIMode}
+          className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 flex items-center gap-2"
+          disabled={loading}
+        >
+          <Brain size={16} />
+          AI Mode
+        </button>
+      </div>
+      
+      {message && (
+        <div className="text-center p-3 bg-gray-100 rounded">
+          {message}
+        </div>
+      )}
+    </div>
+  );
+
+  const renderAIMode = () => {
+    const currentStep = currentStepIndex >= 0 ? aiSteps[currentStepIndex] : null;
+    
+    // Track which cells have been assigned via backtracking
+    const backtrackAssignments = {};
+    for (let i = 0; i <= currentStepIndex; i++) {
+      const step = aiSteps[i];
+      if (step.type === 'backtrack_assign') {
+        const key = `${step.cell[0]}-${step.cell[1]}`;
+        backtrackAssignments[key] = step.value;
       }
-
-      const [r, c] = emptyCell;
-      const hintValue = solution[r][c];
-
-      // Save current state to history before changing
-      setHistory(prev => [...prev, { board: currentBoard, mask: validationMask }]);
-
-      // 3. Apply the hint
-      const newBoard = currentBoard.map((rowArr, rowIdx) =>
-        rowArr.map((cell, colIdx) => (rowIdx === r && colIdx === c ? hintValue : cell))
-      );
-
-      setCurrentBoard(newBoard);
-      setHintCell([r, c]);
-      setStatus({ type: 'success', message: 'Hint applied! The new number is marked in green.' });
-
-    } catch (e) {
-      setStatus({ type: 'error', message: `Hint failed: ${e.message}` });
-    } finally {
-      setIsLoading(false);
     }
-  };
-
-  // --- Components ---
-
-  const SudokuCell = ({ r, c }) => {
-    const value = currentBoard ? currentBoard[r][c] : 0;
-    const isInitial = initialBoard && initialBoard[r][c] !== 0;
-    const isInvalid = validationMask && validationMask[r][c];
-    const isHint = hintCell && hintCell[0] === r && hintCell[1] === c;
-
-    // Apply 3x3 box borders for visual grouping
-    const borderR = (r % 3 === 2 && r !== 8) ? 'border-b-4 border-gray-400' : 'border-b border-gray-200';
-    const borderC = (c % 3 === 2 && c !== 8) ? 'border-r-4 border-gray-400' : 'border-r border-gray-200';
-
-    let cellClasses = `w-full aspect-square text-lg font-mono flex items-center justify-center transition-all duration-150 ${borderR} ${borderC}`;
-
-    if (isInitial) {
-      cellClasses += ' bg-gray-100 font-bold text-gray-800 pointer-events-none';
-    } else {
-      cellClasses += ' bg-white hover:bg-yellow-50 focus-within:ring-2 focus-within:ring-blue-500 cursor-pointer';
-    }
-
-    if (isInvalid) {
-      cellClasses += ' text-red-600 font-extrabold';
-    } else if (isHint) {
-      cellClasses += ' bg-green-200 text-green-800 font-extrabold';
-    } else if (!isInitial && value !== 0) {
-      cellClasses += ' text-blue-600 font-semibold';
-    }
-
+    
     return (
-      <div className={cellClasses}>
-        <input
-          type="text"
-          className="w-full h-full text-center bg-transparent outline-none p-0 appearance-none"
-          value={value === 0 ? '' : value}
-          onChange={(e) => handleInputChange(r, c, e.target.value)}
-          maxLength="1"
-          disabled={isInitial || !currentBoard || isLoading}
-          style={{ caretColor: 'transparent' }} // Hide cursor for cleaner look
-        />
-      </div>
-    );
-  };
-
-  const StatusBox = ({ status }) => {
-    let icon = <HelpCircle className="w-5 h-5" />;
-    let color = 'bg-blue-100 text-blue-700 border-blue-300';
-
-    if (status.type === 'error') {
-      icon = <XCircle className="w-5 h-5" />;
-      color = 'bg-red-100 text-red-700 border-red-300';
-    } else if (status.type === 'success') {
-      icon = <CheckCircle className="w-5 h-5" />;
-      color = 'bg-green-100 text-green-700 border-green-300';
-    } else if (status.type === 'warning') {
-      icon = <Zap className="w-5 h-5" />;
-      color = 'bg-yellow-100 text-yellow-700 border-yellow-300';
-    }
-
-    return (
-      <div className={`p-4 rounded-xl border-2 shadow-inner mt-6 flex items-start space-x-3 ${color}`}>
-        <div className="flex-shrink-0 mt-0.5">{icon}</div>
-        <p className="text-sm font-medium">{status.message}</p>
-      </div>
-    );
-  };
-
-  const SolutionModal = () => {
-    if (!showSolutionPopup || !solutionBoard) return null;
-
-    return (
-      <div className="fixed inset-0 bg-gray-900 bg-opacity-75 flex items-center justify-center p-4 z-50 transition-opacity duration-300">
-        <div className="bg-white rounded-2xl shadow-2xl p-6 w-full max-w-lg transform scale-100 transition-transform duration-300">
-          <h2 className="text-2xl font-bold text-gray-800 mb-4 flex justify-between items-center">
-            Final Solution
+      <div className="space-y-4">
+        <div className="flex justify-between items-center">
+          <h2 className="text-2xl font-bold">AI Solver Mode</h2>
+          <div className="flex items-center gap-4">
+            <span className="text-sm text-gray-600">Solved in {aiTimeTaken.toFixed(2)}ms</span>
             <button
-              onClick={() => setShowSolutionPopup(false)}
-              className="text-gray-400 hover:text-gray-700 transition-colors"
+              onClick={reset}
+              className="px-4 py-2 bg-gray-500 text-white rounded hover:bg-gray-600 flex items-center gap-2"
             >
-              &times;
+              <RotateCcw size={16} />
+              New Game
             </button>
-          </h2>
-
-          <div className="grid grid-cols-9 border-4 border-gray-500 rounded-lg overflow-hidden max-w-sm mx-auto shadow-xl">
-            {solutionBoard.flat().map((num, index) => {
-              const r = Math.floor(index / 9);
-              const c = index % 9;
-              const borderR = (r % 3 === 2 && r !== 8) ? 'border-b-4 border-gray-500' : 'border-b border-gray-300';
-              const borderC = (c % 3 === 2 && c !== 8) ? 'border-r-4 border-gray-500' : 'border-r border-gray-300';
-
-              return (
+          </div>
+        </div>
+        
+        <div className="flex gap-6">
+          <div className="w-[500px] bg-gray-50 p-4 rounded-lg overflow-y-auto" style={{maxHeight: '680px'}}>
+            <h3 className="font-bold text-lg mb-3">Solver Steps</h3>
+            <div className="space-y-2">
+              {aiSteps.map((step, index) => (
                 <div
                   key={index}
-                  className={`w-full aspect-square flex items-center justify-center text-xl font-bold text-gray-800 ${borderR} ${borderC} bg-gray-50`}
+                  onClick={() => jumpToStep(index)}
+                  className={`p-3 rounded cursor-pointer transition-all ${
+                    index === currentStepIndex
+                      ? 'bg-blue-200 border-2 border-blue-500'
+                      : index < currentStepIndex
+                      ? 'bg-green-100 hover:bg-green-150'
+                      : 'bg-white hover:bg-gray-100'
+                  }`}
                 >
-                  {num}
+                  <div className="font-semibold text-sm">
+                    Step {index + 1}: {step.type === 'arc' ? 'Arc Consistency' : 'Backtrack Assign'}
+                  </div>
+                  {step.type === 'arc' ? (
+                    <div className="text-sm mt-1">
+                      Arc from <span className="font-mono bg-gray-200 px-1 rounded">({step.to[0]}, {step.to[1]})</span> to{' '}
+                      <span className="font-mono bg-gray-200 px-1 rounded">({step.from[0]}, {step.from[1]})</span>
+                      <br />
+                      <span className="text-gray-600">
+                        Remove value <span className="font-bold text-red-600">{step.value}</span> from domain
+                      </span>
+                    </div>
+                  ) : (
+                    <div className="text-sm mt-1">
+                      Assign <span className="font-bold text-green-600">{step.value}</span> to cell{' '}
+                      <span className="font-mono bg-gray-200 px-1 rounded">({step.cell[0]}, {step.cell[1]})</span>
+                    </div>
+                  )}
                 </div>
-              );
-            })}
+              ))}
+            </div>
           </div>
-
-          <button
-            onClick={() => setShowSolutionPopup(false)}
-            className="mt-6 w-full py-3 bg-blue-600 text-white font-semibold rounded-xl hover:bg-blue-700 transition-colors shadow-md"
-          >
-            Close
-          </button>
+          
+          <div className="flex-1 flex flex-col items-center">
+            <div className="grid grid-cols-9 gap-0 border-4 border-gray-800">
+              {currentBoard.map((row, rowIndex) => (
+                row.map((cell, colIndex) => {
+                  const isOriginal = cell !== 0;
+                  const key = `${rowIndex}-${colIndex}`;
+                  const cellDomains = domains[key] || [];
+                  const isBacktrackAssigned = backtrackAssignments[key] !== undefined;
+                  
+                  return (
+                    <div
+                      key={key}
+                      className={`w-16 h-16 border border-gray-300 relative
+                        ${colIndex % 3 === 2 && colIndex !== 8 ? 'border-r-2 border-r-gray-800' : ''}
+                        ${rowIndex % 3 === 2 && rowIndex !== 8 ? 'border-b-2 border-b-gray-800' : ''}
+                        ${isOriginal ? 'bg-gray-200' : 'bg-white'}`}
+                    >
+                      {isOriginal ? (
+                        <div className="absolute inset-0 flex items-center justify-center font-bold text-2xl">
+                          {cell}
+                        </div>
+                      ) : isBacktrackAssigned ? (
+                        <div className="absolute inset-0 flex items-center justify-center font-bold text-3xl text-blue-600">
+                          {backtrackAssignments[key]}
+                        </div>
+                      ) : (
+                        <div className="absolute inset-0 p-1 grid grid-cols-3 gap-0 text-xs">
+                          {[1, 2, 3, 4, 5, 6, 7, 8, 9].map((num) => (
+                            <div
+                              key={num}
+                              className={`flex items-center justify-center ${
+                                cellDomains.includes(num) ? 'text-blue-600 font-semibold' : 'text-transparent'
+                              }`}
+                            >
+                              {num}
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })
+              ))}
+            </div>
+            
+            <div className="flex gap-2 justify-center mt-4">
+              <button
+                onClick={prevStep}
+                disabled={currentStepIndex < 0}
+                className="px-4 py-2 bg-gray-600 text-white rounded hover:bg-gray-700 disabled:bg-gray-300 flex items-center gap-2"
+              >
+                <ChevronLeft size={16} />
+                Previous
+              </button>
+              <span className="px-4 py-2">
+                Step {currentStepIndex + 1} / {aiSteps.length}
+              </span>
+              <button
+                onClick={nextStep}
+                disabled={currentStepIndex >= aiSteps.length - 1}
+                className="px-4 py-2 bg-gray-600 text-white rounded hover:bg-gray-700 disabled:bg-gray-300 flex items-center gap-2"
+              >
+                Next
+                <ChevronRight size={16} />
+              </button>
+            </div>
+          </div>
         </div>
       </div>
     );
   };
 
   return (
-    <div className="min-h-screen bg-gray-50 p-4 sm:p-8 font-sans">
-      <h1 className="text-4xl font-extrabold text-center text-gray-800 mb-2">Sudoku Master</h1>
-      <p className="text-center text-gray-500 mb-8">Powered by Gemini & Flask Backend</p>
-
-      <div className="flex flex-col lg:flex-row max-w-6xl mx-auto gap-8">
-        {/* --- Left Panel: Controls --- */}
-        <div className="lg:w-1/3 w-full bg-white p-6 rounded-2xl shadow-lg h-fit">
-          <h2 className="text-xl font-bold text-gray-700 mb-4 border-b pb-2">Game Setup</h2>
-
-          <div className="space-y-4">
-            {/* Generate Board */}
-            <div className="flex flex-col space-y-2">
-              <label htmlFor="difficulty" className="text-sm font-medium text-gray-600">
-                Generate New Board
-              </label>
-              <select
-                id="difficulty"
-                value={difficulty}
-                onChange={(e) => setDifficulty(e.target.value)}
-                className="w-full p-2 border border-gray-300 rounded-lg focus:ring-blue-500 focus:border-blue-500 transition-colors"
-                disabled={isLoading}
-              >
-                <option value="easy">Easy (More Filled Cells)</option>
-                <option value="medium">Medium</option>
-                <option value="hard">Hard (Fewer Filled Cells)</option>
-              </select>
-              <button
-                onClick={handleGenerateBoard}
-                disabled={isLoading}
-                className="flex items-center justify-center w-full px-4 py-2 bg-blue-600 text-white font-semibold rounded-xl hover:bg-blue-700 transition-colors shadow-md disabled:bg-gray-400"
-              >
-                {isLoading ? <Loader className="w-5 h-5 animate-spin mr-2" /> : <RefreshCcw className="w-5 h-5 mr-2" />}
-                Generate Puzzle
-              </button>
-            </div>
-
-            <div className="border-t pt-4">
-              <h3 className="text-lg font-semibold text-gray-700 mb-3">Playing Tools</h3>
-              <div className="grid grid-cols-2 gap-3">
-                <button
-                  onClick={handleUndo}
-                  disabled={!currentBoard || isLoading || history.length === 0}
-                  className="flex items-center justify-center px-3 py-2 text-sm bg-yellow-500 text-white font-semibold rounded-xl hover:bg-yellow-600 transition-colors shadow disabled:bg-gray-400"
-                >
-                  Undo ({history.length})
-                </button>
-                <button
-                  onClick={handleCheckSolvability}
-                  disabled={!currentBoard || isLoading}
-                  className="flex items-center justify-center px-3 py-2 text-sm bg-purple-600 text-white font-semibold rounded-xl hover:bg-purple-700 transition-colors shadow disabled:bg-gray-400"
-                >
-                  <Zap className="w-4 h-4 mr-2" /> Check Solvability
-                </button>
-                <button
-                  onClick={handleGetHint}
-                  disabled={!currentBoard || isLoading || (currentBoard && currentBoard.flat().every(c => c !== 0))}
-                  className="flex items-center justify-center px-3 py-2 text-sm bg-green-500 text-white font-semibold rounded-xl hover:bg-green-600 transition-colors shadow disabled:bg-gray-400"
-                >
-                  <Target className="w-4 h-4 mr-2" /> Get Hint
-                </button>
-                <button
-                  onClick={handleGetSolution}
-                  disabled={!initialBoard || isLoading}
-                  className="flex items-center justify-center px-3 py-2 text-sm bg-red-600 text-white font-semibold rounded-xl hover:bg-red-700 transition-colors shadow disabled:bg-gray-400"
-                >
-                  <Target className="w-4 h-4 mr-2" /> Show Solution
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        {/* --- Right Panel: Sudoku Board & Status --- */}
-        <div className="lg:w-2/3 w-full">
-          <StatusBox status={status} />
-
-          <div className="mt-8 border-4 border-gray-800 rounded-xl shadow-2xl bg-gray-50 mx-auto max-w-lg w-full">
-            {currentBoard ? (
-              <div className="grid grid-cols-9">
-                {currentBoard.map((rowArr, r) =>
-                  rowArr.map((_, c) => <SudokuCell key={`${r}-${c}`} r={r} c={c} />)
-                )}
-              </div>
-            ) : (
-              <div className="flex items-center justify-center h-80 text-gray-500 p-8">
-                <p className="text-center">
-                  {isLoading ? 'Loading...' : 'Please generate a puzzle to begin playing.'}
-                </p>
-              </div>
-            )}
-          </div>
-          {currentBoard && (
-            <div className="mt-4 flex justify-center">
-               <button
-                  onClick={handleValidateBoard}
-                  disabled={isLoading}
-                  className="flex items-center px-4 py-2 text-sm bg-gray-200 text-gray-700 font-semibold rounded-xl hover:bg-gray-300 transition-colors shadow-md disabled:opacity-50"
-                >
-                  Check Final Validity (API)
-                </button>
-            </div>
-          )}
-
-        </div>
+    <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 p-8">
+      <div className="max-w-7xl mx-auto">
+        {gameState === 'input' && renderInputBoard()}
+        {gameState === 'playing' && renderPlayingBoard()}
+        {gameState === 'ai' && renderAIMode()}
       </div>
-
-      <SolutionModal />
     </div>
   );
 };

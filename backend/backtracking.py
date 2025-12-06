@@ -52,7 +52,7 @@ def get_number_of_solutions(board, i = 0, j = 0, max_solutions=2):
         if is_safe(board, row, col, num):
             board[row][col] = num
 
-            count += get_number_of_solutions(board, row, col, max_solutions)
+            count += get_number_of_solutions(board, row, col, max_solutions - count)
             
             board[row][col] = 0
             
@@ -140,3 +140,17 @@ def fill_board(board):
             board[row][col] = 0
 
     return False
+
+if __name__ == "__main__":
+    board = [
+        [0,0,0,0,0,0,0,0,0],
+        [0,0,0,0,0,0,0,0,0],
+        [0,0,0,0,0,0,0,0,0],
+        [0,0,0,0,0,0,0,0,0],
+        [0,0,0,0,0,0,0,0,0],
+        [0,0,0,0,0,0,0,0,0],
+        [0,0,0,0,0,0,0,0,0],
+        [0,0,0,0,0,0,0,0,0],
+        [0,0,0,0,0,0,0,0,0]
+    ]
+    print(get_number_of_solutions(board))

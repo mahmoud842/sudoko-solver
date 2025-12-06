@@ -5,7 +5,8 @@ import time
 import copy
 
 import backtracking
-from validation import validate_board
+import solver
+from validation import validate_board, is_board_valid
 from generate_board import generate_puzzle, EASY, MEDIUM, HARD
 
 app = Flask(__name__)
@@ -40,21 +41,22 @@ def api_solvable():
 	if not validate_board(board):
 		return jsonify({'error': 'Invalid board format. Must be 9x9 array of integers 0-9.'}), 400
 
-	board_copy = copy.deepcopy(board)
-	
+	if not is_board_valid(board):
+		return jsonify({'error': 'Invalid board: duplicate values found in row, column, or box.'}), 400
+
 	time_to_check_solvable = 0
 	time_to_get_solutions = 0
 	solvable = False
 	count_solutions = 0
 
 	start = time.perf_counter()
-	solvable = backtracking.solvable(board_copy)
+	solvable = backtracking.solvable(copy.deepcopy(board))
 	end = time.perf_counter()
 	time_to_check_solvable = (end - start) * 1000
 	
 	if solvable:
 		start = time.perf_counter()
-		count_solutions = backtracking.get_number_of_solutions(board_copy)
+		count_solutions = backtracking.get_number_of_solutions(copy.deepcopy(board))
 		end = time.perf_counter()
 		time_to_get_solutions = (end - start) * 1000
 
@@ -85,6 +87,32 @@ def api_solve():
 
 	return jsonify({
 		'solution': solution,
+		'time_taken_ms': time_taken
+	})
+
+
+@app.route('/api/solve/arc-backtracking', methods=['POST'])
+def api_solve_arc_backtracking():
+	data = request.get_json(force=True, silent=True)
+	if not data or 'board' not in data:
+		return jsonify({'error': 'Missing "board" in JSON payload'}), 400
+
+	board = data['board']
+	if not validate_board(board):
+		return jsonify({'error': 'Invalid board format. Must be 9x9 array of integers 0-9.'}), 400
+
+	board_copy = copy.deepcopy(board)
+	
+	start = time.perf_counter()
+	solution, steps, solvable = solver.solve(board_copy)
+	end = time.perf_counter()
+	time_taken = (end - start) * 1000
+
+	return jsonify({
+		'solution': solution,
+		'solvable': solvable,
+		'steps': steps,
+		'num_steps': len(steps),
 		'time_taken_ms': time_taken
 	})
 
