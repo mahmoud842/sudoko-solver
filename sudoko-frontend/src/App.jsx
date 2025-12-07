@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Play, Undo, Redo, CheckCircle, Brain, RotateCcw, ChevronLeft, ChevronRight } from 'lucide-react';
 
-const API_URL = 'http://localhost:5000/api';
+const API_URL = 'http://localhost:8080/api';
 
 const App = () => {
   const [gameState, setGameState] = useState('input'); // input, playing, ai
@@ -557,8 +557,8 @@ const App = () => {
                   </div>
                   {step.type === 'arc' ? (
                     <div className="text-sm mt-1">
-                      Arc from <span className="font-mono bg-gray-200 px-1 rounded">({step.to[0]}, {step.to[1]})</span> to{' '}
-                      <span className="font-mono bg-gray-200 px-1 rounded">({step.from[0]}, {step.from[1]})</span>
+                      Arc from <span className="font-mono bg-gray-200 px-1 rounded">({step.from[0]}, {step.from[1]})</span> to{' '}
+                      <span className="font-mono bg-gray-200 px-1 rounded">({step.to[0]}, {step.to[1]})</span>
                       <br />
                       <span className="text-gray-600">
                         Remove value <span className="font-bold text-red-600">{step.value}</span> from domain

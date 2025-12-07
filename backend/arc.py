@@ -1,6 +1,6 @@
 
 from collections import deque
-# from tabulate import tabulate
+from tabulate import tabulate
 
 def arc(board : list):
     domains = [[set(range(1, 10)) for _ in range(9)] for _ in range(9)]
